@@ -1,0 +1,20 @@
+# datasets are never committed - COCA is under a data use agreement,
+# and the ML4SCI sets are large and freely downloadable
+data/
+dataset/
+*.npy
+*.dcm
+*.xml
+*.xlsx
+
+# model weights and derived outputs
+*.pt
+*.pth
+*.csv
+*.json
+!.vscode/*.json
+
+# environments
+.venv*/
+__pycache__/
+*.pyc
