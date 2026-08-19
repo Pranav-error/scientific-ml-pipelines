@@ -57,7 +57,10 @@ def render(pdf_name, dpi):
     if not glob.glob(stem + "-*.png"):
         subprocess.run(["pdftoppm", "-r", str(dpi), "-png",
                         os.path.join(DATA, pdf_name), stem], check=True)
-    return sorted(glob.glob(stem + "-*.png"))
+    # exclude the _L/_R half-page crops this script writes next to the originals,
+    # or a second run re-splits already-split pages into quarters
+    return sorted(f for f in glob.glob(stem + "-*.png")
+                  if not re.search(r"_[LR]\.png$", f))
 
 
 def split_spread(img):
@@ -82,6 +85,18 @@ def ocr_page(img, lang, psm):
     return r.stdout
 
 
+def token_sim(a, b):
+    """Containment of the reference's words in the OCR output, ignoring very short
+    words. Containment rather than Jaccard because an OCR page also picks up running
+    headers and catchwords that the transcription omits, which would unfairly punish
+    a symmetric measure."""
+    A = {w for w in a.split() if len(w) > 3}
+    B = {w for w in b.split() if len(w) > 3}
+    if not B:
+        return 0.0
+    return len(A & B) / len(B)
+
+
 def norm(s, fold_uv=False, fold_fs=False):
     s = unicodedata.normalize("NFC", s).replace("ſ", "s")   # long s
     s = re.sub(r"[^\w\s]", " ", s)
@@ -98,7 +113,7 @@ def main():
     ap.add_argument("--dpi", type=int, default=300)
     ap.add_argument("--lang", default="spa")
     ap.add_argument("--psm", type=int, default=6)
-    ap.add_argument("--min-sim", type=float, default=0.30,
+    ap.add_argument("--min-sim", type=float, default=0.25,
                     help="minimum content similarity to accept a page match")
     a = ap.parse_args()
     import jiwer
@@ -114,20 +129,31 @@ def main():
         print(f"split into {len(halves)} single book pages")
         ocr = {i + 1: ocr_page(p, a.lang, a.psm) for i, p in enumerate(halves)}
 
-        # content alignment: each rendered page takes its best-matching reference page
-        pairs, used = [], set()
-        for pi, text in ocr.items():
-            n = norm(text)
-            best, bs = None, 0.0
-            for rk, rtext in refs.items():
-                if rk in used:
-                    continue
-                s = SequenceMatcher(None, n[:1500], norm(rtext)[:1500]).ratio()
-                if s > bs:
-                    best, bs = rk, s
-            if best and bs >= a.min_sim:
-                used.add(best)
-                pairs.append((pi, best, bs, text, refs[best]))
+        # Content alignment. Character-level SequenceMatcher on a prefix is far too
+        # brittle here: OCR noise and line-break differences wreck it, and greedy
+        # first-come assignment lets an early bad page consume the right reference.
+        # Token containment is robust to both, and the assignment is solved globally
+        # so one page's mistake cannot cascade.
+        pk = sorted(ocr)
+        rk_list = sorted(refs)
+        sim = [[token_sim(norm(ocr[pi]), norm(refs[rk])) for rk in rk_list] for pi in pk]
+        pairs = []
+        try:
+            import numpy as np
+            from scipy.optimize import linear_sum_assignment
+            ri, ci = linear_sum_assignment(-np.array(sim))
+            cand = [(pk[i], rk_list[j], sim[i][j]) for i, j in zip(ri, ci)]
+        except ImportError:
+            cand, used = [], set()
+            for i, pi in enumerate(pk):
+                order = sorted(range(len(rk_list)), key=lambda j: -sim[i][j])
+                for j in order:
+                    if rk_list[j] not in used:
+                        used.add(rk_list[j]); cand.append((pi, rk_list[j], sim[i][j])); break
+        for pi, rkm, sc in cand:
+            if sc >= a.min_sim:
+                pairs.append((pi, rkm, sc, ocr[pi], refs[rkm]))
+        pairs.sort(key=lambda t: -t[2])
 
         print(f"aligned {len(pairs)}/{len(halves)} pages (similarity >= {a.min_sim})")
         if not pairs:
