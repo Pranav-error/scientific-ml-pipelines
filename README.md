@@ -131,42 +131,47 @@ on a ROOT 6.40.02 built from source with `-Dtmva-sofie=ON`, torch 2.13, opset 13
 |---|---|---|
 | Gemm *(control)* | pass | pass |
 | Relu *(control)* | pass | pass |
-| BatchNormalization | **pass** | pass |
 | MaxPool / AveragePool | fail | pass |
+| BatchNormalization | fail | parses, **codegen fails** |
 | Add (residual) | fail | pass |
-| Softmax | fail | pass |
-| Tanh | fail | pass |
-| LeakyRelu | fail | pass |
+| Softmax / Tanh / LeakyRelu | fail | pass |
 | Flatten (Reshape) | fail | pass |
 | Concat | fail | pass |
-| **total** | **3 / 11** | **11 / 11** |
+| **total** | **2 / 11** | **10 / 11** |
 
-**Measuring it corrected the claim it was built to check.** Reading ROOT's source says the
-PyTorch parser maps six operators — Gemm, Conv, Relu, Selu, Sigmoid, Transpose — and that
-pooling, batch normalisation and residual connections are therefore unreachable. Batch
-normalisation *parses*. It is not in that list, and the assumption that the list was
-complete was wrong. The eight genuine failures each report
-`Parsing PyTorch node onnx::X is not yet supported`, so the gap is real — just not the gap
-the source reading described.
-
-The ONNX column is the one that matters going forward:
+The PyTorch column matches ROOT's source exactly: the parser maps six operators — Gemm,
+Conv, Relu, Selu, Sigmoid, Transpose — and only Gemm and Relu appear alone in these cases.
+Each of the nine failures reports `Parsing PyTorch node onnx::X is not yet supported`.
+The ONNX route carries all of them, which is what matters going forward:
 [root-project/root#22734](https://github.com/root-project/root/pull/22734) removes the
-Keras and PyTorch parsers, and on `master` they are already gone. Every operator the
-outgoing parser could not reach survives the route that replaces it.
+Keras and PyTorch parsers, and on `master` they are already gone.
+
+**The BatchNorm row is a lesson about test design, and it briefly produced a false
+finding.** The first version of that case was `Conv2d -> BatchNorm2d`. In eval mode the
+export folds the normalisation into the convolution's weights, so the ONNX graph is
+literally `['Conv']` — the case tested `Conv`, passed, and appeared to prove the parser
+supported an operator its own source does not list. Standing BatchNorm alone leaves nothing
+to fold into, the node survives, and it fails like the rest. **A passing test proved the
+opposite of what it claimed, because the thing under test had been optimised away before it
+ran.**
+
+`ROperator_BatchNormalization` then fails at C++ codegen on the ONNX route with
+`tensor brunning_var not found when trying to get its data` — the dot in `b.running_var` is
+lost and the initializer lookup misses. This is **not yet reported upstream**: it has only
+been seen in an environment where two ROOT installations load simultaneously
+(`Inconsistent TClassTable`), and it has not been checked against `master`, whose ONNX
+parser was rewritten to drop protobuf. Reproducing it cleanly is the next step.
 
 **Both probes treat Gemm and Relu as controls and refuse to report if they fail.** That
-mattered twice. The conda-forge ROOT package does not enable SOFIE at all
-(`root-config --features` lists no `tmva-sofie`), so the probes check that first and exit
-naming the missing feature. And driven through PyROOT the parser fails on every case,
-including the controls — its embedded interpreter cannot `import torch` — so the probe runs
-as a ROOT macro instead. Either failure would otherwise have looked like "0 of 11 operators
-supported", a dramatic and completely false result.
+guard fired twice: the conda-forge ROOT package does not enable SOFIE at all
+(`root-config --features` lists no `tmva-sofie`), and driven through PyROOT the parser
+fails on every case because its embedded interpreter cannot `import torch`. Either would
+otherwise have read as "0 of 11 operators supported".
 
 Build note: ROOT 6.40 cannot configure with `-Dtmva-sofie=ON` while `tmva-pymva` is off,
 which is what `-Dgminimal=ON` gives you. `SearchInstalledSoftware.cmake` then requests only
 `Development.Module`, creating `Python3::Module`, while `sofie_parsers/CMakeLists.txt`
-links `ROOTTMVASofiePyParsers` against `Python3::Python` unconditionally. Fixed on master,
-where those parsers no longer exist.
+links `ROOTTMVASofiePyParsers` against `Python3::Python` unconditionally. Fixed on master.
 
 ### `tools/` — documentation link checker
 `k8s_linkcheck.py` finds broken internal links in Hugo documentation sites. Written against

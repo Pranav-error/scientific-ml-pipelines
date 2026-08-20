@@ -50,9 +50,16 @@ class AvgPool(nn.Module):
 
 
 class BatchNorm(nn.Module):
+    """BatchNorm with NO preceding conv, deliberately.
+
+    `Conv2d -> BatchNorm2d` in eval mode does not test BatchNormalization at all: the
+    export folds the normalisation into the convolution's weights, so the ONNX graph is
+    just ['Conv'] and the case silently measures Conv instead. Standing alone there is
+    nothing to fold into, and the BatchNormalization node survives.
+    """
     def __init__(s):
-        super().__init__(); s.c = nn.Conv2d(1, 2, 3, padding=1); s.b = nn.BatchNorm2d(2)
-    def forward(s, x): return s.b(s.c(x))
+        super().__init__(); s.b = nn.BatchNorm2d(1)
+    def forward(s, x): return s.b(x)
 
 
 class Residual(nn.Module):                  # needs onnx::Add
