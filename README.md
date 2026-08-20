@@ -123,23 +123,37 @@ alongside the conventional one.
 
 ### `sofie/` — operator coverage probes for ROOT's SOFIE
 Two probes that build one minimal model per operator and report which ones SOFIE can
-convert: `probe_pytorch_parser.py` for the PyTorch parser, `probe_onnx_parser.py` for the
-PyTorch -> ONNX -> SOFIE route, separating parse failures from C++ codegen failures.
+convert: `probe_onnx_parser.py` for the PyTorch -> ONNX -> SOFIE route, separating ONNX
+export, parse and C++ codegen failures, and `probe_pytorch_parser.py` for the direct
+PyTorch parser.
 
-The question they exist to answer: ROOT's SOFIE inference engine implements 56 ONNX
-operators in C++, while its PyTorch parser maps only six (Gemm, Conv, Relu, Selu, Sigmoid,
-Transpose), so pooling, batch normalisation and residual connections are unreachable from
-PyTorch even though the engine can already execute them. The ONNX probe matters more going
-forward, because [root-project/root#22734](https://github.com/root-project/root/pull/22734)
-proposes removing the Keras and PyTorch parsers entirely and keeping only the ONNX path.
+Running them at all required building ROOT from source with `-Dtmva-sofie=ON`. The
+conda-forge package does not enable SOFIE — `root-config --features` on 6.40.02 lists
+`tmva`, `tmva-cpu`, `tmva-cudnn`, `tmva-pymva` and no `tmva-sofie` — so both probes check
+that precondition first and exit naming the missing feature rather than appearing to
+measure something.
 
-**These numbers are read from ROOT's source, not measured — and the probes say so rather
-than pretending otherwise.** The conda-forge ROOT package does not enable SOFIE:
-`root-config --features` on 6.40.02 lists `tmva`, `tmva-cpu`, `tmva-cudnn`, `tmva-pymva`
-and no `tmva-sofie`, and `TMVA::Experimental::SOFIE` exposes `PyKeras` but neither
-`PyTorch` nor `RModelParser_ONNX`. Both probes check that precondition first and exit with
-the missing feature named, so an unrunnable environment can never be mistaken for a result.
-Measuring the gap requires a ROOT built with `-Dtmva-sofie=ON`.
+**ONNX route: 11 of 11 operators pass**, parse and codegen, on ROOT 6.40.02 / torch 2.13 /
+opset 13 — pooling, batch normalisation, residual add, softmax, tanh, leaky relu, flatten
+and concat included. This is the route that matters:
+[root-project/root#22734](https://github.com/root-project/root/pull/22734) removes the
+Keras and PyTorch parsers, and on `master` they are already gone. The measurement says the
+surviving path carries everything the removed one could not.
+
+**The PyTorch route is still unmeasured, and the probe says so rather than reporting a
+number.** It returns 0 of 11 on this build — but `Gemm` and `Relu` are controls the parser
+documentably supports, and they fail too, with cling JIT errors about a libc++ ABI mismatch
+and a `std_darwin.modulemap` missing `__configuration/experimental.h`. **When the control
+fails, the instrument is measuring itself.** A "0 of 11" here would say nothing about
+operator coverage, so it is not claimed. The 6-of-56 figure quoted for that parser remains
+read from ROOT's source, not observed.
+
+A build note worth recording: ROOT 6.40 cannot configure with `-Dtmva-sofie=ON` while
+`tmva-pymva` is off, which is what `-Dgminimal=ON` gives you.
+`SearchInstalledSoftware.cmake` then requests only `Development.Module`, creating
+`Python3::Module`, while `sofie_parsers/CMakeLists.txt` links `ROOTTMVASofiePyParsers`
+against `Python3::Python` unconditionally. Fixed on master, where those parsers no longer
+exist.
 
 ### `tools/` — documentation link checker
 `k8s_linkcheck.py` finds broken internal links in Hugo documentation sites. Written against
