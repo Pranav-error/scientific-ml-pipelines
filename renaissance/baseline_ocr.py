@@ -57,10 +57,11 @@ def render(pdf_name, dpi):
     if not glob.glob(stem + "-*.png"):
         subprocess.run(["pdftoppm", "-r", str(dpi), "-png",
                         os.path.join(DATA, pdf_name), stem], check=True)
-    # exclude the _L/_R half-page crops this script writes next to the originals,
-    # or a second run re-splits already-split pages into quarters
+    # Return ONLY pdftoppm's own output (stem-NN.png). This script writes derived
+    # crops beside them (_L/_R halves, _lNNN projection lines, _bNNN line boxes); a
+    # looser glob picks those up on a later run and re-crops already-cropped images.
     return sorted(f for f in glob.glob(stem + "-*.png")
-                  if not re.search(r"_[LR]\.png$", f))
+                  if re.search(r"-\d+\.png$", f))
 
 
 def split_spread(img):
