@@ -16,7 +16,7 @@ than appearing to measure something.
 
     conda run -n rootsofie python probe_pytorch_parser.py
 """
-import os, sys, traceback, warnings
+import os, sys, subprocess, traceback, warnings
 warnings.filterwarnings("ignore")
 
 import torch
@@ -106,6 +106,17 @@ CASES = [
 ]
 
 
+def require_sofie_cli():
+    """Fail loudly when the ROOT on PATH has no SOFIE, before anything else runs."""
+    feats = subprocess.run(["root-config", "--features"], capture_output=True,
+                           text=True).stdout.split()
+    if "tmva-sofie" not in feats:
+        raise SystemExit(
+            "This ROOT build cannot run the probe: tmva-sofie is not enabled.\n"
+            f"  features: {' '.join(f for f in feats if f.startswith('tmva'))}\n"
+            "Rebuild ROOT with -Dtmva-sofie=ON -Dtmva-pymva=ON to measure anything.")
+
+
 def require_sofie(ROOT, attr):
     """Fail loudly and specifically when the ROOT build has no SOFIE parser."""
     import subprocess
@@ -121,30 +132,100 @@ def require_sofie(ROOT, attr):
     return S
 
 
+MACRO = r"""
+// Parse each traced model with SOFIE's PyTorch parser and print one PASS/FAIL line.
+//
+// This runs as a ROOT macro rather than through PyROOT on purpose. The parser embeds a
+// Python interpreter and runs `import torch` inside it; from a python process that import
+// fails ("Failed to run python code: import torch") while the identical model parses fine
+// from a .C macro. Driving it here measures the parser instead of the embedding.
+#include "TMVA/RModelParser_PyTorch.h"
+#include <fstream>
+#include <sstream>
+#include <vector>
+#include <string>
+#include <iostream>
+
+void probe(const char *manifest) {
+   std::ifstream in(manifest);
+   std::string line;
+   while (std::getline(in, line)) {
+      if (line.empty()) continue;
+      std::istringstream ss(line);
+      std::string path, label;
+      std::getline(ss, path, '|');
+      std::string dims;
+      std::getline(ss, dims, '|');
+      std::getline(ss, label);
+      std::vector<std::vector<size_t>> shapes(1);
+      std::istringstream ds(dims);
+      long d;
+      while (ds >> d) shapes[0].push_back((size_t)d);
+      try {
+         auto model = TMVA::Experimental::SOFIE::PyTorch::Parse(path, shapes);
+         std::cout << "RESULT\tPASS\t" << label << "\t" << std::endl;
+      } catch (const std::exception &e) {
+         std::string m(e.what());
+         auto nl = m.find('\n');
+         if (nl != std::string::npos) m = m.substr(0, nl);
+         std::cout << "RESULT\tFAIL\t" << label << "\t" << m.substr(0, 110) << std::endl;
+      } catch (...) {
+         std::cout << "RESULT\tFAIL\t" << label << "\tunknown C++ exception" << std::endl;
+      }
+   }
+}
+"""
+
+
 def main():
-    import ROOT
-    Parse = require_sofie(ROOT, "PyTorch").PyTorch.Parse
-    print(f"ROOT {ROOT.gROOT.GetVersion()}  torch {torch.__version__}\n")
+    import tempfile
+    import shutil
+
+    require_sofie_cli()
+    print(f"torch {torch.__version__}\n")
+
+    tmp = tempfile.mkdtemp(prefix="sofieprobe_")
+    try:
+        manifest = os.path.join(tmp, "manifest.txt")
+        with open(manifest, "w") as fh:
+            for label, cls, shape in CASES:
+                path = os.path.join(tmp, f"m_{cls.__name__}.pt")
+                m = cls().eval()
+                torch.jit.save(torch.jit.trace(m, torch.randn(*shape)), path)
+                fh.write(f"{path}|{' '.join(str(d) for d in shape)}|{label}\n")
+
+        macro = os.path.join(tmp, "probe.C")
+        with open(macro, "w") as fh:
+            fh.write(MACRO)
+
+        proc = subprocess.run(["root", "-l", "-b", "-q",
+                               f'{macro}("{manifest}")'],
+                              capture_output=True, text=True)
+        rows = [l.split("\t") for l in proc.stdout.splitlines()
+                if l.startswith("RESULT\t")]
+        if not rows:
+            print(proc.stdout[-2000:])
+            print(proc.stderr[-2000:])
+            raise SystemExit("the macro produced no results — see output above")
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
 
     ok, fail = [], []
-    for label, cls, shape in CASES:
-        path = os.path.join(OUT, f"m_{cls.__name__}.pt")
-        m = cls().eval()
-        torch.jit.save(torch.jit.trace(m, torch.randn(*shape)), path)
-        try:
-            Parse(path, [shape])
+    for _, verdict, label, msg in rows:
+        if verdict == "PASS":
             ok.append(label)
             print(f"  PASS  {label}")
-        except Exception as e:
-            msg = str(e).strip().splitlines()
-            msg = msg[-1][:110] if msg else repr(e)
+        else:
             fail.append((label, msg))
             print(f"  FAIL  {label}\n          {msg}")
-        finally:
-            if os.path.exists(path):
-                os.remove(path)
 
-    print(f"\n{len(ok)} parsed, {len(fail)} failed, of {len(CASES)} operators tested")
+    print(f"\n{len(ok)} parsed, {len(fail)} failed, of {len(rows)} operators tested")
+
+    if len([l for l in ok if "baseline" in l]) < 2:
+        print("\nCONTROLS FAILED — this run measures the harness, not the parser.\n"
+              "Gemm and Relu are documented as supported; if they do not parse, no other\n"
+              "row here means anything. Do not report these numbers.")
+        return
     if fail:
         print("\nOperators SOFIE implements for ONNX but cannot reach from PyTorch:")
         for label, _ in fail:

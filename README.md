@@ -122,38 +122,51 @@ therefore offers a target-disjoint mode, so the honest generalisation number is 
 alongside the conventional one.
 
 ### `sofie/` — operator coverage probes for ROOT's SOFIE
-Two probes that build one minimal model per operator and report which ones SOFIE can
-convert: `probe_onnx_parser.py` for the PyTorch -> ONNX -> SOFIE route, separating ONNX
-export, parse and C++ codegen failures, and `probe_pytorch_parser.py` for the direct
-PyTorch parser.
+Two probes that build one minimal model per operator and report which SOFIE can convert:
+`probe_pytorch_parser.py` for the direct PyTorch parser, `probe_onnx_parser.py` for the
+PyTorch -> ONNX -> SOFIE route, separating export, parse and C++ codegen failures. Measured
+on a ROOT 6.40.02 built from source with `-Dtmva-sofie=ON`, torch 2.13, opset 13.
 
-Running them at all required building ROOT from source with `-Dtmva-sofie=ON`. The
-conda-forge package does not enable SOFIE — `root-config --features` on 6.40.02 lists
-`tmva`, `tmva-cpu`, `tmva-cudnn`, `tmva-pymva` and no `tmva-sofie` — so both probes check
-that precondition first and exit naming the missing feature rather than appearing to
-measure something.
+| operator | PyTorch parser | via ONNX |
+|---|---|---|
+| Gemm *(control)* | pass | pass |
+| Relu *(control)* | pass | pass |
+| BatchNormalization | **pass** | pass |
+| MaxPool / AveragePool | fail | pass |
+| Add (residual) | fail | pass |
+| Softmax | fail | pass |
+| Tanh | fail | pass |
+| LeakyRelu | fail | pass |
+| Flatten (Reshape) | fail | pass |
+| Concat | fail | pass |
+| **total** | **3 / 11** | **11 / 11** |
 
-**ONNX route: 11 of 11 operators pass**, parse and codegen, on ROOT 6.40.02 / torch 2.13 /
-opset 13 — pooling, batch normalisation, residual add, softmax, tanh, leaky relu, flatten
-and concat included. This is the route that matters:
+**Measuring it corrected the claim it was built to check.** Reading ROOT's source says the
+PyTorch parser maps six operators — Gemm, Conv, Relu, Selu, Sigmoid, Transpose — and that
+pooling, batch normalisation and residual connections are therefore unreachable. Batch
+normalisation *parses*. It is not in that list, and the assumption that the list was
+complete was wrong. The eight genuine failures each report
+`Parsing PyTorch node onnx::X is not yet supported`, so the gap is real — just not the gap
+the source reading described.
+
+The ONNX column is the one that matters going forward:
 [root-project/root#22734](https://github.com/root-project/root/pull/22734) removes the
-Keras and PyTorch parsers, and on `master` they are already gone. The measurement says the
-surviving path carries everything the removed one could not.
+Keras and PyTorch parsers, and on `master` they are already gone. Every operator the
+outgoing parser could not reach survives the route that replaces it.
 
-**The PyTorch route is still unmeasured, and the probe says so rather than reporting a
-number.** It returns 0 of 11 on this build — but `Gemm` and `Relu` are controls the parser
-documentably supports, and they fail too, with cling JIT errors about a libc++ ABI mismatch
-and a `std_darwin.modulemap` missing `__configuration/experimental.h`. **When the control
-fails, the instrument is measuring itself.** A "0 of 11" here would say nothing about
-operator coverage, so it is not claimed. The 6-of-56 figure quoted for that parser remains
-read from ROOT's source, not observed.
+**Both probes treat Gemm and Relu as controls and refuse to report if they fail.** That
+mattered twice. The conda-forge ROOT package does not enable SOFIE at all
+(`root-config --features` lists no `tmva-sofie`), so the probes check that first and exit
+naming the missing feature. And driven through PyROOT the parser fails on every case,
+including the controls — its embedded interpreter cannot `import torch` — so the probe runs
+as a ROOT macro instead. Either failure would otherwise have looked like "0 of 11 operators
+supported", a dramatic and completely false result.
 
-A build note worth recording: ROOT 6.40 cannot configure with `-Dtmva-sofie=ON` while
-`tmva-pymva` is off, which is what `-Dgminimal=ON` gives you.
-`SearchInstalledSoftware.cmake` then requests only `Development.Module`, creating
-`Python3::Module`, while `sofie_parsers/CMakeLists.txt` links `ROOTTMVASofiePyParsers`
-against `Python3::Python` unconditionally. Fixed on master, where those parsers no longer
-exist.
+Build note: ROOT 6.40 cannot configure with `-Dtmva-sofie=ON` while `tmva-pymva` is off,
+which is what `-Dgminimal=ON` gives you. `SearchInstalledSoftware.cmake` then requests only
+`Development.Module`, creating `Python3::Module`, while `sofie_parsers/CMakeLists.txt`
+links `ROOTTMVASofiePyParsers` against `Python3::Python` unconditionally. Fixed on master,
+where those parsers no longer exist.
 
 ### `tools/` — documentation link checker
 `k8s_linkcheck.py` finds broken internal links in Hugo documentation sites. Written against
