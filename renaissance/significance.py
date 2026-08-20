@@ -22,9 +22,9 @@ from baseline_ocr import render, reference_pages, norm, token_sim, split_spread,
 import lines_and_trocr as L
 
 
-def page_cers(book, engine_name, seg, filt, min_sim=0.25):
+def page_cers(book, engine_name, seg, filt, psm=6, min_sim=0.25):
     """Return {reference_page: CER} for one engine configuration."""
-    L.SEG, L.FILTER = seg, filt
+    L.SEG, L.FILTER, L.PAGE_PSM = seg, filt, int(psm)
     engine = L.ENGINES[engine_name]
     pdf, gt = BOOKS[book]
     halves = [h for im in render(pdf, 300) for h in split_spread(im)]
@@ -49,9 +49,9 @@ def main():
     ap.add_argument("--books", default="noble")
     ap.add_argument("--boot", type=int, default=10000)
     ap.add_argument("--a", default="tesseract-page:projection:none",
-                    help="reference config, engine:seg:filter")
+                    help="reference config, engine:seg:filter[:psm]")
     ap.add_argument("--b", default="tesseract-line:boxes:body",
-                    help="challenger config, engine:seg:filter")
+                    help="challenger config, engine:seg:filter[:psm]")
     a = ap.parse_args()
     cfg_a, cfg_b = a.a.split(":"), a.b.split(":")
     rng = np.random.default_rng(0)

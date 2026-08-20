@@ -39,6 +39,20 @@ The route there, kept in full because the dead ends are the argument:
    that. A rectangle suffices, since the marginalia sit in their own column beside the body
    and the running head above it.
 
+5. **Two things that did not help.** Both were tried after the win and both are kept,
+   because "we tried it and it did not move" is worth more than silence:
+
+   - **Page segmentation mode.** Sweeping `--psm 3/4/6` on the cropped page moves CER by
+     less than 0.005 and the best mode *disagrees between the two books* (3 on nobleza,
+     4 on noble) — the signature of noise, and the paired CI spans zero both ways. `--psm 6`
+     stays the default because nothing beats it, not because it won.
+   - **Masking instead of cropping** (`tesseract-page-masked`). Painting every non-body
+     region white, rather than cropping to one rectangle, should in principle remove
+     marginalia that reach inside the body's bounding box while preserving the line spacing
+     `--psm 6` depends on. It scores 0.1160 / 0.1131 against cropping's 0.1136 / 0.1050 —
+     indistinguishable on the paired test, so it buys nothing for noticeably more
+     machinery. Cropping stays the recommendation on simplicity.
+
 Every engine is scored through the same alignment and normalisation, so the numbers are
 directly comparable. Differences are confirmed with a paired per-page test rather than read
 off a mean: page-level CER variance is large enough to swamp a real effect, and `noble`
@@ -46,13 +60,15 @@ line-vs-page looked like a +0.0016 win that the CI showed to be indistinguishabl
 
     python lines_and_trocr.py --engine tesseract-page
     python lines_and_trocr.py --engine tesseract-page-cropped
+    python lines_and_trocr.py --engine tesseract-page-masked
     python lines_and_trocr.py --engine tesseract-line --seg boxes --filter body
     python lines_and_trocr.py --engine trocr --seg boxes --filter body
     python significance.py --books nobleza,noble \
         --a tesseract-page:projection:none --b tesseract-page-cropped:projection:none
 
 Crops are cached by filename and reused. After changing filter logic, delete the derived
-crops (`rm -f work/*_b?*.png work/*_crop.png`) or stale ones are silently reused.
+crops (`rm -f work/*_b?*.png work/*_crop.png work/*_mask.png`) or stale ones are
+silently reused.
 """
 import os, re, argparse, subprocess
 import numpy as np
@@ -225,6 +241,7 @@ def tesseract_line_boxes(img_path, lang="spa", psm=3, pad=4, min_h=10, min_w=40)
 SEGMENTERS = {"projection": find_lines, "boxes": tesseract_line_boxes}
 SEG = "projection"
 FILTER = "none"
+PAGE_PSM = 6
 
 
 def segment(page_img):
@@ -294,7 +311,7 @@ def tesseract_page_cropped(page_img, lang="spa", pad=8):
     im = Image.open(page_img).convert("L")
     W, H = im.size
     if not kept:
-        return ocr_page(page_img, lang, 6)
+        return ocr_page(page_img, lang, PAGE_PSM)
     x0 = max(0, min(b[1] for b in kept) - pad)
     y0 = max(0, min(b[0] for b in kept) - pad)
     x1 = min(W, max(b[1] + b[2] for b in kept) + pad)
@@ -302,12 +319,43 @@ def tesseract_page_cropped(page_img, lang="spa", pad=8):
     dest = page_img.replace(".png", "_crop.png")
     if not os.path.exists(dest):
         im.crop((x0, y0, x1, y1)).save(dest)
-    return ocr_page(dest, lang, 6)
+    return ocr_page(dest, lang, PAGE_PSM)
+
+
+def tesseract_page_masked(page_img, lang="spa", pad=6):
+    """Page-level OCR with every non-body region painted out, page geometry preserved.
+
+    `tesseract_page_cropped` removes non-body text with a single rectangle, which is a
+    coarse instrument: anything that happens to fall inside the body's bounding box — a
+    marginal note that reaches into the column, a smudge between paragraphs, a catchword on
+    the last line — is still inside the crop and still gets read.
+
+    This paints the page white except for the kept body boxes, so non-body text is removed
+    wherever it sits rather than only outside a rectangle. The page keeps its original
+    dimensions and the body lines keep their original positions, which matters because
+    `--psm 6` reads a uniform block and is sensitive to line spacing and indentation.
+    """
+    boxes = line_boxes_tsv(page_img)
+    kept = body_filter(boxes)
+    if not kept:
+        return ocr_page(page_img, lang, PAGE_PSM)
+    im = Image.open(page_img).convert("L")
+    W, H = im.size
+    canvas = Image.new("L", (W, H), 255)
+    for y, x, w, h in kept:
+        x0, y0 = max(0, x - pad), max(0, y - pad)
+        x1, y1 = min(W, x + w + pad), min(H, y + h + pad)
+        canvas.paste(im.crop((x0, y0, x1, y1)), (x0, y0))
+    dest = page_img.replace(".png", "_mask.png")
+    if not os.path.exists(dest):
+        canvas.save(dest)
+    return ocr_page(dest, lang, PAGE_PSM)
 
 
 ENGINES = {
-    "tesseract-page": lambda p: ocr_page(p, "spa", 6),
+    "tesseract-page": lambda p: ocr_page(p, "spa", PAGE_PSM),
     "tesseract-page-cropped": tesseract_page_cropped,
+    "tesseract-page-masked": tesseract_page_masked,
     "tesseract-line": tesseract_lines,
     "trocr": trocr_lines,
 }
@@ -322,9 +370,11 @@ def main():
                     help="line segmentation for the line-level engines")
     ap.add_argument("--filter", default="none", choices=["none", "body"],
                     help="drop running heads, folio numbers and marginalia (seg=boxes only)")
+    ap.add_argument("--psm", type=int, default=6,
+                    help="page segmentation mode for the page-level engines")
     a = ap.parse_args()
-    global SEG, FILTER
-    SEG, FILTER = a.seg, a.filter
+    global SEG, FILTER, PAGE_PSM
+    SEG, FILTER, PAGE_PSM = a.seg, a.filter, a.psm
     import jiwer
     from scipy.optimize import linear_sum_assignment
 
@@ -333,7 +383,7 @@ def main():
         pdf, gt = BOOKS[book]
         halves = [h for im in render(pdf, 300) for h in split_spread(im)]
         refs = reference_pages(gt)
-        print(f"\n=== {book} | engine={a.engine} | seg={a.seg} | filter={a.filter} | {len(halves)} pages ===")
+        print(f"\n=== {book} | engine={a.engine} | seg={a.seg} | filter={a.filter} | psm={a.psm} | {len(halves)} pages ===")
 
         ocr = {i + 1: engine(p) for i, p in enumerate(halves)}
         pk, rl = sorted(ocr), sorted(refs)
