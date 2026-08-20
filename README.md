@@ -121,13 +121,25 @@ leaks: on the public sample, 33-60% of held-out targets also appear in training.
 therefore offers a target-disjoint mode, so the honest generalisation number is available
 alongside the conventional one.
 
-### `sofie/` — operator coverage probe for ROOT's SOFIE PyTorch parser
-`probe_pytorch_parser.py` builds one minimal PyTorch model per operator and reports which the
-parser can convert. It exists because ROOT's SOFIE inference engine implements 56 ONNX
-operators in C++, while its PyTorch parser maps only six of them (Gemm, Conv, Relu, Selu,
-Sigmoid, Transpose) — so pooling, batch normalisation and residual connections are
-unreachable from PyTorch even though the engine can already execute them. The probe measures
-that gap rather than asserting it.
+### `sofie/` — operator coverage probes for ROOT's SOFIE
+Two probes that build one minimal model per operator and report which ones SOFIE can
+convert: `probe_pytorch_parser.py` for the PyTorch parser, `probe_onnx_parser.py` for the
+PyTorch -> ONNX -> SOFIE route, separating parse failures from C++ codegen failures.
+
+The question they exist to answer: ROOT's SOFIE inference engine implements 56 ONNX
+operators in C++, while its PyTorch parser maps only six (Gemm, Conv, Relu, Selu, Sigmoid,
+Transpose), so pooling, batch normalisation and residual connections are unreachable from
+PyTorch even though the engine can already execute them. The ONNX probe matters more going
+forward, because [root-project/root#22734](https://github.com/root-project/root/pull/22734)
+proposes removing the Keras and PyTorch parsers entirely and keeping only the ONNX path.
+
+**These numbers are read from ROOT's source, not measured — and the probes say so rather
+than pretending otherwise.** The conda-forge ROOT package does not enable SOFIE:
+`root-config --features` on 6.40.02 lists `tmva`, `tmva-cpu`, `tmva-cudnn`, `tmva-pymva`
+and no `tmva-sofie`, and `TMVA::Experimental::SOFIE` exposes `PyKeras` but neither
+`PyTorch` nor `RModelParser_ONNX`. Both probes check that precondition first and exit with
+the missing feature named, so an unrunnable environment can never be mistaken for a result.
+Measuring the gap requires a ROOT built with `-Dtmva-sofie=ON`.
 
 ### `tools/` — documentation link checker
 `k8s_linkcheck.py` finds broken internal links in Hugo documentation sites. Written against

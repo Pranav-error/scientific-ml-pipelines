@@ -8,7 +8,12 @@ converted from PyTorch even though SOFIE could execute it via the ONNX path.
 This builds one minimal model per operator and reports which parse and which fail,
 so the gap is measured rather than asserted.
 
-Run inside the ROOT conda env:
+REQUIRES A ROOT BUILT WITH SOFIE. `root-config --features` must list `tmva-sofie`.
+The conda-forge ROOT package does NOT enable it (verified on 6.40.02: features list
+tmva, tmva-cpu, tmva-cudnn, tmva-pymva only, and TMVA::Experimental::SOFIE exposes
+PyKeras but no PyTorch). On such a build this probe cannot run and reports so rather
+than appearing to measure something.
+
     conda run -n rootsofie python probe_pytorch_parser.py
 """
 import os, sys, traceback, warnings
@@ -101,9 +106,24 @@ CASES = [
 ]
 
 
+def require_sofie(ROOT, attr):
+    """Fail loudly and specifically when the ROOT build has no SOFIE parser."""
+    import subprocess
+    feats = subprocess.run(["root-config", "--features"], capture_output=True,
+                           text=True).stdout.split()
+    S = getattr(ROOT.TMVA.Experimental, "SOFIE", None)
+    if S is None or not hasattr(S, attr):
+        raise SystemExit(
+            f"This ROOT build cannot run the probe: SOFIE.{attr} is unavailable.\n"
+            f"  tmva-sofie in root-config --features: {'tmva-sofie' in feats}\n"
+            f"  features: {' '.join(f for f in feats if f.startswith('tmva'))}\n"
+            "Rebuild ROOT with -Dtmva-sofie=ON (needs protobuf) to measure anything.")
+    return S
+
+
 def main():
     import ROOT
-    Parse = ROOT.TMVA.Experimental.SOFIE.PyTorch.Parse
+    Parse = require_sofie(ROOT, "PyTorch").PyTorch.Parse
     print(f"ROOT {ROOT.gROOT.GetVersion()}  torch {torch.__version__}\n")
 
     ok, fail = [], []
