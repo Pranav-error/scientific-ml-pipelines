@@ -62,6 +62,48 @@ surfaced rather than silently matched.
 > No data is included here. COCA is distributed under a data use agreement; request access
 > from Stanford AIMI directly.
 
+### `renaissance/` — OCR on 17th-century Spanish print
+Tesseract and TrOCR over the RenAIssance (HumanAI) extracts: two Padilla volumes, 32
+half-pages each, scored as character error rate against expert transcriptions.
+
+| engine | nobleza | noble |
+|---|---|---|
+| `tesseract-page` — off-the-shelf baseline | 0.1292 | 0.1446 |
+| `tesseract-line`, projection segmentation | 0.3535 | — |
+| `tesseract-line`, layout boxes + body filter | 0.1668 | 0.1430 |
+| `trocr`, layout boxes + body filter | 0.1786 | 0.1499 |
+| **`tesseract-page-cropped`** | **0.1136** | **0.1050** |
+
+CER is folded for u/v and long-s: the transcription notes record that u and v are used
+interchangeably and that long-s is transcribed as `s` though OCR reads it as `f`, so scores
+are reported raw and folded to separate misreading from period orthography.
+
+**The win is not a better recogniser.** Most of the avoidable error was never recognition
+error at all — running heads, folio numbers and the marginal note column get read off the
+page and scored against a transcription that contains none of them. Cropping to the body
+block and keeping `--psm 6` beats the baseline by 12% and 27% relative. Line-level
+recognition, the obvious approach, *never* beat the page baseline and was not likely to:
+per-line `--psm 7` discards the page-level language context `--psm 6` exploits. It earned
+its place as the diagnostic that located the real cost, not as the fix.
+
+**Nothing here is claimed off a mean.** Page difficulty varies enough to swamp a real
+effect, so `significance.py` pairs engines page by page and bootstraps the difference. That
+mattered: the line pipeline scored 0.1430 against a 0.1446 baseline on `noble` and looked
+like the first win, but the paired CI was [-0.0394, +0.0377] over 15/25 pages —
+indistinguishable. The cropped engine clears the bar honestly, at +0.0156 CI
+[+0.0077, +0.0243] and +0.0397 CI [+0.0303, +0.0494], winning 18/25 and 24/25 pages.
+
+**Two documented dead ends.** Sweeping `--psm 3/4/6` over the cropped page moves CER by
+under 0.005 and the best mode disagrees between the books — opposite signs with CIs over
+zero, which is what noise looks like. And masking every non-body region instead of cropping
+to one rectangle, which should in principle remove marginalia reaching inside the body box,
+is indistinguishable from cropping for noticeably more machinery. Neither is adopted.
+
+TrOCR stays short of the baseline throughout. That is domain mismatch, not segmentation —
+the checkpoint is trained on modern printed English — and fine-tuning it here was judged
+not worth the cost, since the transcriptions are page-level and would require inducing
+line-level pairs from an engine the model is meant to beat.
+
 ### `symba/` — symbolic regression of squared amplitudes
 Sequence-to-sequence transformer mapping Feynman amplitudes (prefix-notation token trees) to
 squared amplitudes (SymPy expressions).
@@ -113,6 +155,13 @@ Apple Silicon (MPS) trips over several things that work on CUDA:
 - **PyRadiomics** does not build on Python 3.14. On 3.11:
   `pip install "numpy<2" setuptools wheel Cython versioneer tomli` then
   `pip install --no-build-isolation pyradiomics`.
+- **TrOCR will not load on transformers 5.x out of the box.** The `microsoft/trocr-*` repos
+  ship `vocab.json` and `merges.txt` but no `tokenizer.json`, and transformers 5 removed the
+  slow `RobertaTokenizer` it used to convert from, so `TrOCRProcessor.from_pretrained` raises
+  — and installing sentencepiece or tiktoken, which the error suggests, does not help. Build
+  the processor from parts instead, with `AutoTokenizer.from_pretrained("roberta-base")`;
+  that is exact rather than approximate, since TrOCR's decoder is roberta-base with its
+  50265-token vocabulary unchanged.
 - **`np.isscalar()` returns False for numpy scalars.** Using it to filter PyRadiomics output
   silently drops most features while the run still reports success.
 
