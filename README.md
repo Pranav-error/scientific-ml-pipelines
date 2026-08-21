@@ -127,46 +127,39 @@ Two probes that build one minimal model per operator and report which SOFIE can 
 PyTorch -> ONNX -> SOFIE route, separating export, parse and C++ codegen failures. Measured
 on a ROOT 6.40.02 built from source with `-Dtmva-sofie=ON`, torch 2.13, opset 13.
 
-| operator | PyTorch parser | via ONNX |
-|---|---|---|
-| Gemm *(control)* | pass | pass |
-| Relu *(control)* | pass | pass |
-| MaxPool / AveragePool | fail | pass |
-| BatchNormalization | fail | parses, **codegen fails** |
-| Add (residual) | fail | pass |
-| Softmax / Tanh / LeakyRelu | fail | pass |
-| Flatten (Reshape) | fail | pass |
-| Concat | fail | pass |
-| **total** | **2 / 11** | **10 / 11** |
+| route | result |
+|---|---|
+| PyTorch parser | **2 / 11** — Gemm and Relu only |
+| via ONNX | **11 / 11** — parse and codegen |
 
-The PyTorch column matches ROOT's source exactly: the parser maps six operators — Gemm,
-Conv, Relu, Selu, Sigmoid, Transpose — and only Gemm and Relu appear alone in these cases.
-Each of the nine failures reports `Parsing PyTorch node onnx::X is not yet supported`.
-The ONNX route carries all of them, which is what matters going forward:
-[root-project/root#22734](https://github.com/root-project/root/pull/22734) removes the
-Keras and PyTorch parsers, and on `master` they are already gone.
+The PyTorch column matches ROOT's source exactly: that parser maps six operators — Gemm,
+Conv, Relu, Selu, Sigmoid, Transpose — and only Gemm and Relu stand alone in these cases.
+Each failure reports `Parsing PyTorch node onnx::X is not yet supported`. The gap is real,
+and reporting it upstream as
+[root-project/root#23108](https://github.com/root-project/root/issues/23108) got the
+definitive answer: the PyTorch parser is orphaned and
+[#22734](https://github.com/root-project/root/pull/22734) removes it, because PyTorch's own
+ONNX export is now the preferred path. On `master` it is already gone. The ONNX column says
+that removal costs nothing — every operator the outgoing parser could not reach survives
+the route replacing it.
 
-**The BatchNorm row is a lesson about test design, and it briefly produced a false
-finding.** The first version of that case was `Conv2d -> BatchNorm2d`. In eval mode the
-export folds the normalisation into the convolution's weights, so the ONNX graph is
-literally `['Conv']` — the case tested `Conv`, passed, and appeared to prove the parser
-supported an operator its own source does not list. Standing BatchNorm alone leaves nothing
-to fold into, the node survives, and it fails like the rest. **A passing test proved the
-opposite of what it claimed, because the thing under test had been optimised away before it
-ran.**
-
-`ROperator_BatchNormalization` then fails at C++ codegen on the ONNX route with
-`tensor brunning_var not found when trying to get its data` — the dot in `b.running_var` is
-lost and the initializer lookup misses. This is **not yet reported upstream**: it has only
-been seen in an environment where two ROOT installations load simultaneously
-(`Inconsistent TClassTable`), and it has not been checked against `master`, whose ONNX
-parser was rewritten to drop protobuf. Reproducing it cleanly is the next step.
+**Getting an honest 11/11 took three corrections, and the wrong answers were the
+believable ones.** The BatchNorm case started as `Conv2d -> BatchNorm2d`, which in eval
+mode does not test BatchNormalization at all: the export folds the normalisation into the
+convolution's weights and the graph is literally `['Conv']`. It passed, and that pass
+briefly read as evidence the parser supported an operator its own source does not list.
+Standing BatchNorm alone fixed that but introduced a second artifact — a freshly
+initialised BatchNorm has `weight == running_var` and `bias == running_mean`, so the
+exporter deduplicates them behind `Identity` nodes, and SOFIE requires those four to be
+initialized tensors ([#16282](https://github.com/root-project/root/pull/16282)). Codegen
+failed on a graph no trained model produces. Giving the parameters distinct values is what
+finally tests the operator a real model would export.
 
 **Both probes treat Gemm and Relu as controls and refuse to report if they fail.** That
-guard fired twice: the conda-forge ROOT package does not enable SOFIE at all
+guard fired twice — the conda-forge ROOT package does not enable SOFIE at all
 (`root-config --features` lists no `tmva-sofie`), and driven through PyROOT the parser
-fails on every case because its embedded interpreter cannot `import torch`. Either would
-otherwise have read as "0 of 11 operators supported".
+fails on every case because its embedded interpreter cannot `import torch`, so the probe
+runs as a ROOT macro. Either would otherwise have read as "0 of 11 operators supported".
 
 Build note: ROOT 6.40 cannot configure with `-Dtmva-sofie=ON` while `tmva-pymva` is off,
 which is what `-Dgminimal=ON` gives you. `SearchInstalledSoftware.cmake` then requests only

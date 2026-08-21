@@ -50,15 +50,27 @@ class AvgPool(nn.Module):
 
 
 class BatchNorm(nn.Module):
-    """BatchNorm with NO preceding conv, deliberately.
+    """BatchNorm alone, with parameters made mutually distinct.
 
-    `Conv2d -> BatchNorm2d` in eval mode does not test BatchNormalization at all: the
-    export folds the normalisation into the convolution's weights, so the ONNX graph is
-    just ['Conv'] and the case silently measures Conv instead. Standing alone there is
-    nothing to fold into, and the BatchNormalization node survives.
+    Two traps, both of which produced a wrong answer before being fixed:
+
+    `Conv2d -> BatchNorm2d` in eval mode does not test BatchNormalization at all — the
+    export folds the normalisation into the convolution's weights and the ONNX graph is
+    just ['Conv']. Standing alone there is nothing to fold into.
+
+    A *freshly initialised* BatchNorm then has weight == running_var (all ones) and
+    bias == running_mean (all zeros), so the exporter deduplicates them and feeds the
+    operator through Identity nodes. SOFIE requires those four to be initialized tensors
+    (see root-project/root#16282), so codegen fails on a graph no trained model produces.
+    Distinct values reproduce what a trained model actually exports.
     """
     def __init__(s):
-        super().__init__(); s.b = nn.BatchNorm2d(1)
+        super().__init__(); s.b = nn.BatchNorm2d(2)
+        with torch.no_grad():
+            s.b.weight.copy_(torch.tensor([1.3, 0.7]))
+            s.b.bias.copy_(torch.tensor([0.2, -0.4]))
+            s.b.running_mean.copy_(torch.tensor([0.05, -0.1]))
+            s.b.running_var.copy_(torch.tensor([1.8, 0.6]))
     def forward(s, x): return s.b(x)
 
 
@@ -103,7 +115,7 @@ CASES = [
     ("Relu        (baseline, expected OK)", Relu,       [1, 8]),
     ("MaxPool     -> ROperator_Pool",       MaxPool,    [1, 1, 8, 8]),
     ("AveragePool -> ROperator_Pool",       AvgPool,    [1, 1, 8, 8]),
-    ("BatchNorm   -> ROperator_BatchNormalization", BatchNorm, [1, 1, 8, 8]),
+    ("BatchNorm   -> ROperator_BatchNormalization", BatchNorm, [1, 2, 8, 8]),
     ("Add/residual-> ROperator_BasicBinary", Residual,  [1, 8]),
     ("Softmax     -> ROperator_Softmax",    Softmax,    [1, 8]),
     ("Tanh        -> ROperator_Tanh",       Tanh,       [1, 8]),
