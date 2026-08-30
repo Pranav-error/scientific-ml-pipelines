@@ -26,6 +26,17 @@ from probe_pytorch_parser import CASES, require_sofie
 OUT = os.path.dirname(os.path.abspath(__file__))
 
 
+def describe(e):
+    """Last line of an exception message, or its type when the message is empty.
+
+    SOFIE's cppyy bindings sometimes raise with no message at all, and an empty
+    string has no last line -- indexing one aborted the probe mid-survey and threw
+    away every result collected up to that point.
+    """
+    lines = str(e).strip().splitlines()
+    return lines[-1][:110] if lines else type(e).__name__
+
+
 def cleanup(name):
     for ext in (".onnx", ".hxx", ".dat"):
         f = os.path.join(OUT, f"m_{name}{ext}")
@@ -53,7 +64,7 @@ def main():
         try:
             export(cls, shape, path, opset)
         except Exception as e:
-            results.append((label, "EXPORT", str(e).strip().splitlines()[-1][:110]))
+            results.append((label, "EXPORT", describe(e)))
             print(f"  EXPORT-FAIL  {label}")
             cleanup(name)
             continue
@@ -61,7 +72,7 @@ def main():
             parser = SOFIE.RModelParser_ONNX()
             model = parser.Parse(path)
         except Exception as e:
-            results.append((label, "PARSE", str(e).strip().splitlines()[-1][:110]))
+            results.append((label, "PARSE", describe(e)))
             print(f"  PARSE-FAIL   {label}")
             cleanup(name)
             continue
@@ -70,7 +81,7 @@ def main():
             results.append((label, "OK", ""))
             print(f"  PASS         {label}")
         except Exception as e:
-            results.append((label, "CODEGEN", str(e).strip().splitlines()[-1][:110]))
+            results.append((label, "CODEGEN", describe(e)))
             print(f"  CODEGEN-FAIL {label}")
         finally:
             cleanup(name)

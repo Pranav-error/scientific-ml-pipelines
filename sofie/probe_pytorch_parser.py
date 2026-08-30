@@ -138,7 +138,6 @@ def require_sofie_cli():
 
 def require_sofie(ROOT, attr):
     """Fail loudly and specifically when the ROOT build has no SOFIE parser."""
-    import subprocess
     feats = subprocess.run(["root-config", "--features"], capture_output=True,
                            text=True).stdout.split()
     S = getattr(ROOT.TMVA.Experimental, "SOFIE", None)
